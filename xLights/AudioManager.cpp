@@ -3497,7 +3497,9 @@ AudioReaderDecoderInitState AudioReaderDecoder::initialize()
     if ( _codecContext == nullptr )
         SetStateAndReturn( AudioReaderDecoderInitState::CodecContextAllocFails );
 
-    avcodec_parameters_to_context(_codecContext, _formatContext->streams[_streamIndex]->codecpar);
+    status = avcodec_parameters_to_context( _codecContext, _formatContext->streams[_streamIndex]->codecpar );
+    if ( status < 0 )
+        SetStateAndReturn( AudioReaderDecoderInitState::CodecContextFillFails );
 
     status = ::avcodec_open2( _codecContext, codec, nullptr );
     if ( status != 0 )

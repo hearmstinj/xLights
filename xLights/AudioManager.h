@@ -327,7 +327,7 @@ class AudioReaderDecoder;
 enum class AudioReaderDecoderInitState
 {
     Ok, NoInit,
-    FormatContextAllocFails, OpenFails, NoAudioStream, FindStreamInfoFails, CodecContextAllocFails, CodecOpenFails, FrameAllocFails, PacketAllocFails
+    FormatContextAllocFails, OpenFails, NoAudioStream, FindStreamInfoFails, CodecContextAllocFails, CodecContextFillFails, CodecOpenFails, FrameAllocFails, PacketAllocFails
 };
 
 class AudioResampler;
