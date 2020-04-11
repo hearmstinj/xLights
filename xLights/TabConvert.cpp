@@ -896,7 +896,7 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
 
     // Create the codec context that will configure the codec
     AVFormatContext* oc;
-    avformat_alloc_output_context2(&oc, fmt, nullptr, filename);
+    avformat_alloc_output_context2( &oc, fmt, nullptr, filename );
     if (!oc)
     {
         logger_base.warn("   Could not create output context.");
@@ -904,7 +904,8 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
     }
 
     // Find the output codec
-    AVCodec * codec = avcodec_find_encoder(fmt->video_codec);
+    //const AVCodec * codec = avcodec_find_encoder(fmt->video_codec);
+    const AVCodec* codec = ::avcodec_find_encoder( fmt->video_codec );
     if (!codec)
     {
         logger_base.error("   Cannot find codec %d.", fmt->video_codec);
@@ -912,7 +913,7 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
     }
 
     // Create a video stream
-    AVStream* video_st = avformat_new_stream(oc, codec);
+    AVStream* video_st = avformat_new_stream( oc, /*codec*/nullptr );
     if (!video_st)
     {
         logger_base.error("   Cannot allocate stream.");
@@ -920,20 +921,44 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
     }
     video_st->id = oc->nb_streams - 1;
     video_st->time_base.num = 1;
-    video_st->time_base.den = 1000 / dataBuf->FrameTime();
+    video_st->time_base.den = 1000 / dataBuf->FrameTime(); // This is the same as the sequence ms
+    //video_st->codecpar
 
     // Configure the codec
-    AVCodecContext* codecContext = video_st->codec;
-    avcodec_get_context_defaults3(codecContext, codec);
-    codecContext->codec_id = fmt->video_codec;
+    //AVCodecContext* codecContext = video_st->codec;
+    const AVCodecParameters *codecParams = video_st->codecpar;
+    AVCodecContext* codecContext = ::avcodec_alloc_context3( codec );
+    ::avcodec_get_context_defaults3( codecContext, codec ); // necessary??
+    ::avcodec_parameters_to_context( codecContext, codecParams );
+
+#if 1
+    // If we set this here.. failure in avcodec_open2()
+    // If we don't, failure in ....
+    //codecContext->codec_id = fmt->video_codec /*AV_CODEC_ID_RAWVIDEO*/;
+    codecContext->bit_rate = 400000;
+    codecContext->width = width;
+    codecContext->height = height;
+    codecContext->time_base.num = video_st->time_base.num;
+    codecContext->time_base.den = video_st->time_base.den;
+    codecContext->framerate.num = 20;
+    codecContext->framerate.den = 1;
+    codecContext->gop_size = 12; // key frame gap ... 1 is all key frames
+    codecContext->max_b_frames = 1;
+    codecContext->pix_fmt = AV_PIX_FMT_YUV420P;
+#else
+    //codecContext->codec_id = fmt->video_codec;
     codecContext->bit_rate = 400000;
     codecContext->width = width;
     codecContext->height = height;
     codecContext->time_base.num = 1;
     codecContext->time_base.den = 1000 / dataBuf->FrameTime(); // This is the same as the sequence ms
+    //codecContext->framerate.num = 1;
+    //codecContext->framerate.den = codecContext->time_base.den;
     codecContext->gop_size = 12; // key frame gap ... 1 is all key frames
     codecContext->max_b_frames = 1;
     codecContext->pix_fmt = AV_PIX_FMT_YUV420P;
+#endif
+    logger_base.info( "after avcodec_parameters_to_context()... %d x %d", codecContext->width, codecContext->height );
 
     if (fmt->video_codec == AV_CODEC_ID_H264)
     {
@@ -962,12 +987,14 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
     if (oc->oformat->flags & AVFMT_GLOBALHEADER)
         codecContext->flags |= CODEC_FLAG_GLOBAL_HEADER;
 
-    int ret = avcodec_open2(codecContext, codec, nullptr);
+    logger_base.info( "About to open codec context..." );
+    int ret = ::avcodec_open2( codecContext, codec/*nullptr*/, nullptr );
     if (ret < 0)
     {
-        logger_base.error("   Cannot not open codec context %d.", ret);
+        logger_base.error("   Cannot open codec context %d.", ret);
         return;
     }
+    logger_base.info( "avcodec_open2() returned %d", ret );
 
     // Create the frame object which will be placed in the packet
     AVFrame* frame = av_frame_alloc();
@@ -978,6 +1005,14 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
     frame->format = codecContext->pix_fmt;
     frame->width = codecContext->width;
     frame->height = codecContext->height;
+    logger_base.info( "About to av_frame_get_buffer() for %d x %d -- %d", frame->width, frame->height, frame->format );
+
+    ret = ::av_frame_get_buffer( frame, 32 );
+    if ( ret < 0 )
+    {
+        logger_base.error("   Cannot not allocate frame buffers.");
+        return;
+    }
 
     // Initialise image converter
     int sws_flags = SWS_BICUBIC;
@@ -989,6 +1024,7 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
         logger_base.error("   Could not create image conversion context.");
         return;
     }
+    logger_base.info( "got through sws_getContext()" );
 
     // Create source and final image frames
     AVFrame src_picture;
@@ -1004,21 +1040,54 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
         return;
     }
 
+    logger_base.info( "got through av_image_alloc() calls" );
+
     // Dump to the log the video format
-    av_dump_format(oc, 0, filename, 1);
+    //::av_dump_format(oc, 0, filename, 1);
+    if ( oc->oformat->name )
+        logger_base.info( "output to %s format", oc->oformat->name );
+
+    //video_st->codecpar->width = codecContext->width;
+    //video_st->codecpar->height = codecContext->height;
+    ret = avformat_init_output( oc, nullptr );
+    if ( ret < 0 )
+    {
+        logger_base.error("   avformat_init_output() fails - %d streams ; ret == %d", oc->nb_streams, ret );
+        return;
+    }
 
     /* open the output file, if needed */
     if (!(fmt->flags & AVFMT_NOFILE)) {
         if (avio_open(&oc->pb, filename, AVIO_FLAG_WRITE) < 0) {
-            logger_base.error("   Could open file %s.", static_cast<const char *>(filename));
+            logger_base.error( "   Could not open file %s.", filename );
             return;
         }
     }
 
     /* Write the stream header, if any. */
-    if (avformat_write_header(oc, nullptr) < 0) {
-        logger_base.error("   Could not write video file header.");
+    if ( ret == AVSTREAM_INIT_IN_WRITE_HEADER )
+    {
+        // Well crap, this doesn't seem to fix "Invalid or not supported codec type '?' "
+        //oc->oformat = fmt;
+        //oc->iformat = ::avforma
+
+        // nope
+        //oc->url = ::strdup( "C:\\xLights\\Dummy Show Folder\\Matrix 1.avi" );
+
+        // nope
+        //oc->video_codec = const_cast<AVCodec *>( codec );
+        //logger_base.info( "before avformat_write_header, codec == 0x%x", oc->video_codec );
+
+        // nope
+        //codecContext->codec_id = fmt->video_codec;
+
+        if ( (ret = ::avformat_write_header( oc, nullptr )) < 0)
+        {
+            char buff[1024];
+            const char *ptr = ::av_make_error_string( buff, 1024, ret );
+            logger_base.error( "   Could not write video file header - %s.", ptr );
         return;
+        }
     }
 
     frame->pts = 0;
@@ -1048,19 +1117,34 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
         }
 
         /* create a packet to put the frame in */
-        AVPacket pkt;
-        int got_output;
-        av_init_packet(&pkt);
-        pkt.data = nullptr;    // packet data will be allocated by the encoder
-        pkt.size = 0;
+        AVPacket* pkt = ::av_packet_alloc();
+        //int got_output;
+        av_init_packet( pkt );
+        pkt->data = nullptr;    // packet data will be allocated by the encoder
+        pkt->size = 0;
 
         // Encode it
-        ret = avcodec_encode_video2(codecContext, &pkt, frame, &got_output);
+        //ret = avcodec_encode_video2(codecContext, &pkt, frame, &got_output);
+        ret = ::avcodec_send_frame( codecContext, frame );
         if (ret < 0) {
             logger_base.error("   Error encoding frame %d.", ret);
             return;
         }
 
+#if 1
+        while ( ret >= 0 )
+        {
+            ret = ::avcodec_receive_packet( codecContext, pkt );
+            if ( ret == AVERROR(EAGAIN) || ret == AVERROR_EOF )
+                break;
+
+            if ( ret < 0 )
+            {
+                logger_base.error("   Error writing video frame %d. %d.", i, ret);
+                return;
+            }
+        }
+#else
         /* If size is zero, it means the image was buffered. */
         if (got_output) {
             pkt.stream_index = video_st->index;
@@ -1077,30 +1161,39 @@ void xLightsFrame:: WriteVideoModelFile(const wxString& filenames, long numChans
             logger_base.error("   Error writing video frame %d. %d.", i, ret);
             return;
         }
+#endif
 
-        frame->pts += av_rescale_q(1, video_st->codec->time_base, video_st->time_base);
+        //frame->pts += av_rescale_q(1, video_st->codec->time_base, video_st->time_base);
+        ++frame->pts;
+
+        ::av_packet_unref( pkt );
+        ::av_packet_free( &pkt );
     }
+
+    // todo - flush the encoder (null AVFrame)
 
     // Write the video trailer
-    av_write_trailer(oc);
+    av_write_trailer( oc );
 
     // Free and close everything
-    sws_freeContext(sws_ctx);
-    avcodec_close(video_st->codec);
-    av_free(frame->data[0]);
-    av_free(frame);
-    for (size_t i = 0; i < oc->nb_streams; i++) {
-        av_freep(&oc->streams[i]->codec);
-        av_freep(&oc->streams[i]);
-    }
-    if (!(fmt->flags & AVFMT_NOFILE)) {
-        /* Close the output file. */
-        avio_close(oc->pb);
-    }
-    av_free(oc);
+    sws_freeContext( sws_ctx );
+    //avcodec_close(video_st->codec);
+    //av_free(frame->data[0]);
+    //av_free(frame);
+    //for (size_t i = 0; i < oc->nb_streams; i++) {
+    //    av_freep(&oc->streams[i]->codec);
+    //    av_freep(&oc->streams[i]);
+    //}
+    //if (!(fmt->flags & AVFMT_NOFILE)) {
+    //    /* Close the output file. */
+    //    avio_close(oc->pb);
+    //}
+    //av_free(oc);
+    ::avcodec_free_context( &codecContext );
+    ::av_frame_free( &frame );
 
     // Remove the log function
-    av_log_set_callback(nullptr);
+    ::av_log_set_callback( nullptr );
 
     logger_base.debug("Model video written successfully.");
 }
@@ -1118,7 +1211,7 @@ void xLightsFrame::WriteGIFModelFile(const wxString& filename, long numChans, un
     // must be a multiple of 2
     logger_base.debug("   GIF dimensions %dx%d.",  width, height);
     logger_base.debug("   GIF frames %ld.", endFrame - startFrame);
-           
+
     wxImageArray imgArray;
 
     for (size_t i = startFrame; i < endFrame; i++)
@@ -1173,7 +1266,7 @@ void xLightsFrame::WriteGIFModelFile(const wxString& filename, long numChans, un
     else
     {
         logger_base.debug("Model GIF written successfully.");
-    }   
+    }
 }
 
 void xLightsFrame:: WriteMinleonNECModelFile(const wxString& filename, long numChans, unsigned int startFrame, unsigned int endFrame,
@@ -1325,6 +1418,6 @@ void xLightsFrame:: WriteFalconPiFile(const wxString& filename)
                                    &mediaFilename, // media filename
                                    nullptr,
                                    filename);
-    
+
     FileConverter::WriteFalconPiFile(write_params);
 }
